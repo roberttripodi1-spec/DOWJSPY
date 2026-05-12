@@ -31,6 +31,21 @@ if "mode" not in st.session_state:
 
 
 # -----------------------------
+# Plotly interaction config
+# -----------------------------
+PLOTLY_CONFIG = {
+    "scrollZoom": True,
+    "displayModeBar": True,
+    "responsive": True,
+    "modeBarButtonsToAdd": [
+        "drawline",
+        "drawopenpath",
+        "eraseshape",
+    ],
+}
+
+
+# -----------------------------
 # Time / Market Helpers
 # -----------------------------
 def eastern_now():
@@ -61,6 +76,23 @@ def market_status():
     return "MARKET CLOSED", "Outside trading hours"
 
 
+def convert_to_et_index(df):
+    try:
+        if df is None or df.empty:
+            return df
+
+        copied = df.copy()
+
+        if copied.index.tz is None:
+            copied.index = copied.index.tz_localize("UTC")
+
+        copied.index = copied.index.tz_convert("America/New_York")
+        return copied
+
+    except Exception:
+        return df
+
+
 # -----------------------------
 # Data Helpers
 # -----------------------------
@@ -87,6 +119,9 @@ def load_data(period, interval):
 
         if spy.empty or dia.empty:
             return None, None
+
+        spy = convert_to_et_index(spy)
+        dia = convert_to_et_index(dia)
 
         return spy, dia
 
@@ -125,21 +160,6 @@ def clean_volume(df):
     return clean_series(df, "Volume")
 
 
-def get_prices(df):
-    close_series = clean_close(df)
-
-    if len(close_series) < 2:
-        return None, None
-
-    return float(close_series.iloc[-1]), float(close_series.iloc[-2])
-
-
-def safe_open(close_series):
-    if close_series.empty:
-        return None
-    return float(close_series.iloc[0])
-
-
 def calc_vwap(df):
     close = clean_close(df)
     volume = clean_volume(df)
@@ -158,11 +178,11 @@ def calc_trading_stats(df):
     low = clean_low(df)
     volume = clean_volume(df)
 
-    if close.empty:
+    if close.empty or len(close) < 2:
         return None
 
     latest = float(close.iloc[-1])
-    previous = float(close.iloc[-2]) if len(close) >= 2 else latest
+    previous = float(close.iloc[-2])
     open_price = float(close.iloc[0])
     high_price = float(high.max()) if not high.empty else float(close.max())
     low_price = float(low.min()) if not low.empty else float(close.min())
@@ -195,39 +215,37 @@ def style_direction(value):
 # -----------------------------
 # Chart Helpers
 # -----------------------------
+def standard_chart_layout(fig, height, title=None):
+    fig.update_layout(
+        height=height,
+        title=title,
+        template="plotly_dark",
+        hovermode="x unified",
+        dragmode="pan",
+        xaxis=dict(
+            title="Eastern Time",
+            tickformat="%I:%M %p",
+            hoverformat="%I:%M:%S %p ET",
+            rangeslider=dict(visible=False),
+        ),
+        margin=dict(l=10, r=10, t=50 if title else 30, b=10),
+    )
+    return fig
+
+
 def add_reference_lines(fig, stats, show_vwap=True, show_open=True, show_high_low=True):
     if stats is None:
         return fig
 
     if show_open:
-        fig.add_hline(
-            y=stats["open"],
-            line_dash="dot",
-            annotation_text="Open",
-            annotation_position="top left",
-        )
+        fig.add_hline(y=stats["open"], line_dash="dot", annotation_text="Open", annotation_position="top left")
 
     if show_vwap and stats["vwap"] is not None:
-        fig.add_hline(
-            y=stats["vwap"],
-            line_dash="dash",
-            annotation_text="VWAP approx",
-            annotation_position="bottom left",
-        )
+        fig.add_hline(y=stats["vwap"], line_dash="dash", annotation_text="VWAP approx", annotation_position="bottom left")
 
     if show_high_low:
-        fig.add_hline(
-            y=stats["high"],
-            line_dash="dot",
-            annotation_text="High",
-            annotation_position="top right",
-        )
-        fig.add_hline(
-            y=stats["low"],
-            line_dash="dot",
-            annotation_text="Low",
-            annotation_position="bottom right",
-        )
+        fig.add_hline(y=stats["high"], line_dash="dot", annotation_text="High", annotation_position="top right")
+        fig.add_hline(y=stats["low"], line_dash="dot", annotation_text="Low", annotation_position="bottom right")
 
     return fig
 
@@ -254,15 +272,8 @@ def make_single_chart(df, ticker, stats, height=430, smooth=True, show_refs=True
     if show_refs:
         fig = add_reference_lines(fig, stats)
 
-    fig.update_layout(
-        height=height,
-        xaxis_title="Time",
-        yaxis_title="Price",
-        template="plotly_dark",
-        hovermode="x unified",
-        margin=dict(l=10, r=10, t=30, b=10),
-    )
-
+    fig = standard_chart_layout(fig, height=height)
+    fig.update_yaxes(title_text="Price")
     return fig
 
 
@@ -270,10 +281,7 @@ def make_joined_pattern_chart(spy_df, dia_df, height=520, smooth=True, show_spre
     spy_close = clean_close(spy_df)
     dia_close = clean_close(dia_df)
 
-    joined = pd.concat(
-        [spy_close.rename("SPY"), dia_close.rename("DIA")],
-        axis=1,
-    ).dropna()
+    joined = pd.concat([spy_close.rename("SPY"), dia_close.rename("DIA")], axis=1).dropna()
 
     if joined.empty or len(joined) < 2:
         return None, None
@@ -290,49 +298,16 @@ def make_joined_pattern_chart(spy_df, dia_df, height=520, smooth=True, show_spre
 
     fig = go.Figure()
 
-    fig.add_trace(
-        go.Scatter(
-            x=normalized.index,
-            y=normalized["SPY Pattern"],
-            mode="lines",
-            name="SPY Pattern",
-            line_shape="spline" if smooth else "linear",
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=normalized.index,
-            y=normalized["DIA Pattern"],
-            mode="lines",
-            name="DIA Pattern",
-            line_shape="spline" if smooth else "linear",
-        )
-    )
+    fig.add_trace(go.Scatter(x=normalized.index, y=normalized["SPY Pattern"], mode="lines", name="SPY Pattern", line_shape="spline" if smooth else "linear"))
+    fig.add_trace(go.Scatter(x=normalized.index, y=normalized["DIA Pattern"], mode="lines", name="DIA Pattern", line_shape="spline" if smooth else "linear"))
 
     if show_spread:
-        fig.add_trace(
-            go.Scatter(
-                x=normalized.index,
-                y=normalized["Spread"],
-                mode="lines",
-                name="SPY-DIA Spread",
-                line=dict(dash="dot"),
-            )
-        )
+        fig.add_trace(go.Scatter(x=normalized.index, y=normalized["Spread"], mode="lines", name="SPY-DIA Spread", line=dict(dash="dot")))
 
     fig.add_hline(y=0, line_dash="dash")
 
-    fig.update_layout(
-        height=height,
-        title="Joined Pattern Chart: SPY vs DIA",
-        xaxis_title="Time",
-        yaxis_title="Move From Start (%)",
-        template="plotly_dark",
-        hovermode="x unified",
-        margin=dict(l=10, r=10, t=50, b=10),
-    )
-
+    fig = standard_chart_layout(fig, height=height, title="Joined Pattern Chart: SPY vs DIA")
+    fig.update_yaxes(title_text="Move From Start (%)")
     return fig, normalized
 
 
@@ -342,34 +317,21 @@ def make_volume_chart(spy, dia):
 
     volume_fig = go.Figure()
 
-    volume_fig.add_trace(
-        go.Bar(
-            x=spy_volume.index,
-            y=spy_volume,
-            name="SPY Volume",
-            opacity=0.65,
-        )
-    )
+    volume_fig.add_trace(go.Bar(x=spy_volume.index, y=spy_volume, name="SPY Volume", opacity=0.65))
+    volume_fig.add_trace(go.Bar(x=dia_volume.index, y=dia_volume, name="DIA Volume", opacity=0.65))
 
-    volume_fig.add_trace(
-        go.Bar(
-            x=dia_volume.index,
-            y=dia_volume,
-            name="DIA Volume",
-            opacity=0.65,
-        )
-    )
-
-    volume_fig.update_layout(
-        height=330,
-        template="plotly_dark",
-        barmode="overlay",
-        xaxis_title="Time",
-        yaxis_title="Volume",
-        margin=dict(l=10, r=10, t=30, b=10),
-    )
-
+    volume_fig = standard_chart_layout(volume_fig, height=330)
+    volume_fig.update_layout(barmode="overlay")
+    volume_fig.update_yaxes(title_text="Volume")
     return volume_fig
+
+
+def show_chart(fig):
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config=PLOTLY_CONFIG,
+    )
 
 
 # -----------------------------
@@ -398,11 +360,6 @@ st.markdown(
         color: white;
         border: 1px solid {stop_color};
     }}
-
-    .small-note {{
-        color: #AAAAAA;
-        font-size: 0.9rem;
-    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -413,7 +370,7 @@ st.markdown(
 # Header / Controls
 # -----------------------------
 st.title("SPY vs DIA Day Trading Dashboard")
-st.caption("Optimized for quick intraday pattern reading while keeping the original dual-mode setup.")
+st.caption("Optimized for quick intraday pattern reading with scroll-wheel zoom on every chart.")
 
 st.sidebar.header("Dashboard Mode")
 mode = st.sidebar.radio(
@@ -500,6 +457,8 @@ st.info(
     f"Source interval: {interval} | Screen refresh: {refresh_seconds}s | Time: {eastern_time_string()}"
 )
 
+st.caption("Chart controls: hover over any chart and use your mouse wheel to zoom in/out. Click and drag to pan. Double-click to reset the view.")
+
 
 # -----------------------------
 # Fast Trading Readout
@@ -517,8 +476,8 @@ m4.metric("DIA Last", f"${dia_stats['latest']:.2f}", f"{style_direction(dia_stat
 m5.metric("DIA From Open", f"{dia_stats['from_open_pct']:.2f}%", f"${dia_stats['from_open']:.2f}")
 m6.metric("DIA VWAP", dia_vwap_state)
 
-# Quick interpretation strip
 bias_parts = []
+
 if spy_stats["from_open_pct"] > 0 and dia_stats["from_open_pct"] > 0:
     bias_parts.append("Both green from open")
 elif spy_stats["from_open_pct"] < 0 and dia_stats["from_open_pct"] < 0:
@@ -542,8 +501,8 @@ st.markdown(f"**Quick read:** {'; '.join(bias_parts)}.")
 if st.session_state.mode == "1-Second Trading View":
     st.subheader("1-Second Trading View")
     st.caption(
-        "Screen refreshes every second when RUN LIVE is on. Yahoo/yfinance does not provide true tick data here; "
-        "it normally supplies 1-minute bars, refreshed on your screen every second."
+        "Screen refreshes every second when RUN LIVE is on. Yahoo/yfinance normally supplies 1-minute bars, "
+        "so the chart refreshes every second but is not true tick-by-tick data."
     )
 
     joined_fig, normalized = make_joined_pattern_chart(
@@ -555,7 +514,7 @@ if st.session_state.mode == "1-Second Trading View":
     )
 
     if joined_fig is not None:
-        st.plotly_chart(joined_fig, use_container_width=True)
+        show_chart(joined_fig)
 
         latest_spy_pattern = float(normalized["SPY Pattern"].iloc[-1])
         latest_dia_pattern = float(normalized["DIA Pattern"].iloc[-1])
@@ -571,7 +530,7 @@ if st.session_state.mode == "1-Second Trading View":
 
     with col1:
         st.subheader("SPY Price Action")
-        st.plotly_chart(
+        show_chart(
             make_single_chart(
                 spy,
                 "SPY",
@@ -579,13 +538,12 @@ if st.session_state.mode == "1-Second Trading View":
                 height=380,
                 smooth=smooth_lines,
                 show_refs=show_reference_lines,
-            ),
-            use_container_width=True,
+            )
         )
 
     with col2:
         st.subheader("DIA Price Action")
-        st.plotly_chart(
+        show_chart(
             make_single_chart(
                 dia,
                 "DIA",
@@ -593,8 +551,7 @@ if st.session_state.mode == "1-Second Trading View":
                 height=380,
                 smooth=smooth_lines,
                 show_refs=show_reference_lines,
-            ),
-            use_container_width=True,
+            )
         )
 
 else:
@@ -604,28 +561,26 @@ else:
 
     with col1:
         st.subheader("SPY Chart")
-        st.plotly_chart(
+        show_chart(
             make_single_chart(
                 spy,
                 "SPY",
                 spy_stats,
                 smooth=smooth_lines,
                 show_refs=show_reference_lines,
-            ),
-            use_container_width=True,
+            )
         )
 
     with col2:
         st.subheader("DIA Chart")
-        st.plotly_chart(
+        show_chart(
             make_single_chart(
                 dia,
                 "DIA",
                 dia_stats,
                 smooth=smooth_lines,
                 show_refs=show_reference_lines,
-            ),
-            use_container_width=True,
+            )
         )
 
     st.divider()
@@ -641,7 +596,7 @@ else:
     if joined_fig is None:
         st.warning("Could not build joined pattern chart yet.")
     else:
-        st.plotly_chart(joined_fig, use_container_width=True)
+        show_chart(joined_fig)
 
         latest_spy_pattern = float(normalized["SPY Pattern"].iloc[-1])
         latest_dia_pattern = float(normalized["DIA Pattern"].iloc[-1])
@@ -660,7 +615,7 @@ else:
 if show_volume:
     st.divider()
     st.subheader("Volume")
-    st.plotly_chart(make_volume_chart(spy, dia), use_container_width=True)
+    show_chart(make_volume_chart(spy, dia))
 
 st.divider()
 
