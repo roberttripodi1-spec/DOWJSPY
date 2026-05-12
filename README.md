@@ -1,7 +1,3 @@
-# SPY/DOW Color Update
-
-Updated colors:
+Updates the actual chart line colors:
 - SPY = Green
-- DOW/DIA = Blue
-
-Everything else remains unchanged.
+- DIA/DOW = Blue

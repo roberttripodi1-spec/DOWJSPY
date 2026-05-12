@@ -1,23 +1,36 @@
 
-# COLOR UPDATE PATCH
+# REPLACE THE joined_chart() TRACE COLORS WITH:
 
-# In the TradingView widget section, replace compareSymbols block with:
+fig.add_trace(
+    go.Scatter(
+        x=normalized.index,
+        y=normalized["SPY Pattern"],
+        mode="lines",
+        name="SPY Pattern",
+        line=dict(color="#00cc66", width=3),
+        line_shape="spline" if smooth else "linear",
+    )
+)
 
-"compareSymbols": [
-  {
-    "symbol": "AMEX:DIA",
-    "position": "SameScale",
-    "color": "#3399ff"
-  }
-],
+fig.add_trace(
+    go.Scatter(
+        x=normalized.index,
+        y=normalized["DIA Pattern"],
+        mode="lines",
+        name="DIA Pattern",
+        line=dict(color="#3399ff", width=3),
+        line_shape="spline" if smooth else "linear",
+    )
+)
 
-# And add this line:
-"studies_overrides": {
-  "mainSeriesProperties.candleStyle.upColor": "#00cc66",
-  "mainSeriesProperties.candleStyle.downColor": "#00cc66",
-  "mainSeriesProperties.lineStyle.color": "#00cc66"
-},
+# ALSO UPDATE SINGLE CHARTS:
 
-# This makes:
-# SPY = Green
-# DOW/DIA = Blue
+# SPY chart
+line=dict(color="#00cc66", width=3)
+
+# DIA chart
+line=dict(color="#3399ff", width=3)
+
+# RESULT:
+# SPY lines = Green
+# DIA/DOW lines = Blue
