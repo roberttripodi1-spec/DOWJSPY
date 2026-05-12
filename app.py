@@ -11,7 +11,6 @@ st.set_page_config(page_title="SPY vs DIA Live Dashboard", layout="wide")
 st.title("SPY vs DIA Live Dashboard")
 st.caption("Live market proxy dashboard for S&P 500 and Dow Jones")
 
-# Session state for live mode
 if "running" not in st.session_state:
     st.session_state.running = False
 
@@ -32,11 +31,24 @@ if st.session_state.running:
 
 @st.cache_data(ttl=1)
 def load_data():
-    spy = yf.download("SPY", period="1d", interval="1m", progress=False)
-    dia = yf.download("DIA", period="1d", interval="1m", progress=False)
-    return spy, dia
+    try:
+        spy = yf.download("SPY", period="1d", interval="1m", progress=False)
+        dia = yf.download("DIA", period="1d", interval="1m", progress=False)
+
+        if spy.empty or dia.empty:
+            return None, None
+
+        return spy, dia
+
+    except Exception as e:
+        st.error(f"Data error: {e}")
+        return None, None
 
 spy, dia = load_data()
+
+if spy is None or dia is None:
+    st.warning("Market data unavailable right now.")
+    st.stop()
 
 col1, col2 = st.columns(2)
 
@@ -60,8 +72,11 @@ with col1:
 
     st.plotly_chart(fig1, use_container_width=True)
 
-    latest_spy = float(spy["Close"].iloc[-1])
-    prev_spy = float(spy["Close"].iloc[-2])
+    close_spy = spy["Close"].dropna()
+
+    latest_spy = float(close_spy.iloc[-1])
+    prev_spy = float(close_spy.iloc[-2])
+
     spy_change = latest_spy - prev_spy
 
     st.metric(
@@ -90,8 +105,11 @@ with col2:
 
     st.plotly_chart(fig2, use_container_width=True)
 
-    latest_dia = float(dia["Close"].iloc[-1])
-    prev_dia = float(dia["Close"].iloc[-2])
+    close_dia = dia["Close"].dropna()
+
+    latest_dia = float(close_dia.iloc[-1])
+    prev_dia = float(close_dia.iloc[-2])
+
     dia_change = latest_dia - prev_dia
 
     st.metric(

@@ -5,10 +5,11 @@ Features:
 - DIA live chart
 - RUN LIVE button
 - STOP button
+- Safe data handling
 - Auto refresh mode
 - Streamlit deployment ready
 
-## Run locally
+## Run
 
 pip install -r requirements.txt
 
