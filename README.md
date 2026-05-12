@@ -1,23 +1,26 @@
-# SPY vs DIA Day Trading Dashboard
+# SPY vs DIA Stable Zoom Dashboard
 
-Added:
-- Mouse wheel zoom on every chart
-- Drag-to-pan enabled by default
-- Double-click reset
-- Mode bar visible
-- Eastern Time chart labels
-- 12-hour AM/PM chart hover labels
+Fixes:
+- Reduced twitching from aggressive 1-second full-page reruns
+- Default refresh is now 5 seconds
+- User can choose 3-30 second refresh
+- Mouse-wheel zoom stays enabled
+- Plotly uirevision helps preserve zoom/pan
+- Added manual REFRESH button
+- Added Auto-follow latest bars toggle
+- Added default visible window setting
+- Charts show Eastern Time in 12-hour AM/PM format
 
 Kept:
-- Pattern Dashboard
-- 1-Second Trading View
 - RUN LIVE / STOP buttons
-- Green RUN when active
-- Red STOP when paused
-- TODAY / 5 DAY / 1 MONTH buttons
-- Joined normalized SPY vs DIA chart
-- Volume chart
-- VWAP/open/high/low reference lines
+- RUN green when active
+- STOP red when paused
+- 1-Second Trading View
+- Pattern Dashboard
+- TODAY / 5 DAY / 1 MONTH
+- Joined SPY/DIA pattern chart
+- Volume
+- VWAP/open/high/low lines
 
 ## Run locally
 
@@ -25,11 +28,6 @@ pip install -r requirements.txt
 
 streamlit run app.py
 
-## GitHub / Streamlit
+## Deploy
 
-Upload:
-- app.py
-- requirements.txt
-- README.md
-
-Then deploy through Streamlit Cloud.
+Upload app.py, requirements.txt, and README.md to GitHub and deploy through Streamlit Cloud.

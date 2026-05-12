@@ -2,51 +2,47 @@
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-import streamlit as st
-import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
+import yfinance as yf
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="SPY vs DIA Day Trading Dashboard",
+    page_title="SPY vs DIA Stable Day Trading Dashboard",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # -----------------------------
-# Session State
+# Session state
 # -----------------------------
-if "running" not in st.session_state:
-    st.session_state.running = False
+defaults = {
+    "running": False,
+    "view_period": "1d",
+    "interval": "1m",
+    "mode": "1-Second Trading View",
+    "lock_zoom": True,
+    "auto_scroll": False,
+    "zoom_minutes": 60,
+    "refresh_key": 0,
+}
 
-if "view_period" not in st.session_state:
-    st.session_state.view_period = "1d"
-
-if "interval" not in st.session_state:
-    st.session_state.interval = "1m"
-
-if "mode" not in st.session_state:
-    st.session_state.mode = "1-Second Trading View"
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
-# -----------------------------
-# Plotly interaction config
-# -----------------------------
 PLOTLY_CONFIG = {
     "scrollZoom": True,
     "displayModeBar": True,
     "responsive": True,
-    "modeBarButtonsToAdd": [
-        "drawline",
-        "drawopenpath",
-        "eraseshape",
-    ],
+    "doubleClick": "reset",
 }
 
 
 # -----------------------------
-# Time / Market Helpers
+# Time helpers
 # -----------------------------
 def eastern_now():
     return datetime.now(ZoneInfo("America/New_York"))
@@ -58,46 +54,44 @@ def eastern_time_string():
 
 def market_status():
     now = eastern_now()
-    weekday = now.weekday()
-    current_time = now.time()
-
-    if weekday >= 5:
+    if now.weekday() >= 5:
         return "MARKET CLOSED", "Weekend"
 
-    if time(4, 0) <= current_time < time(9, 30):
+    t = now.time()
+
+    if time(4, 0) <= t < time(9, 30):
         return "PREMARKET", "4:00 AM - 9:30 AM ET"
 
-    if time(9, 30) <= current_time < time(16, 0):
+    if time(9, 30) <= t < time(16, 0):
         return "MARKET OPEN", "9:30 AM - 4:00 PM ET"
 
-    if time(16, 0) <= current_time < time(20, 0):
+    if time(16, 0) <= t < time(20, 0):
         return "AFTER HOURS", "4:00 PM - 8:00 PM ET"
 
     return "MARKET CLOSED", "Outside trading hours"
 
 
 def convert_to_et_index(df):
-    try:
-        if df is None or df.empty:
-            return df
-
-        copied = df.copy()
-
-        if copied.index.tz is None:
-            copied.index = copied.index.tz_localize("UTC")
-
-        copied.index = copied.index.tz_convert("America/New_York")
-        return copied
-
-    except Exception:
+    if df is None or df.empty:
         return df
 
+    out = df.copy()
+
+    try:
+        if out.index.tz is None:
+            out.index = out.index.tz_localize("UTC")
+        out.index = out.index.tz_convert("America/New_York")
+    except Exception:
+        pass
+
+    return out
+
 
 # -----------------------------
-# Data Helpers
+# Data
 # -----------------------------
-@st.cache_data(ttl=1)
-def load_data(period, interval):
+@st.cache_data(ttl=5)
+def load_data(period, interval, refresh_key):
     try:
         spy = yf.download(
             "SPY",
@@ -120,28 +114,24 @@ def load_data(period, interval):
         if spy.empty or dia.empty:
             return None, None
 
-        spy = convert_to_et_index(spy)
-        dia = convert_to_et_index(dia)
-
-        return spy, dia
+        return convert_to_et_index(spy), convert_to_et_index(dia)
 
     except Exception as e:
         st.error(f"Data error: {e}")
         return None, None
 
 
-def flatten_if_needed(series_or_df):
-    if isinstance(series_or_df, pd.DataFrame):
-        return series_or_df.iloc[:, 0]
-    return series_or_df
+def flatten_col(x):
+    if isinstance(x, pd.DataFrame):
+        return x.iloc[:, 0]
+    return x
 
 
-def clean_series(df, column):
-    if column not in df.columns:
+def clean_series(df, col):
+    if col not in df.columns:
         return pd.Series(dtype=float)
 
-    series = flatten_if_needed(df[column])
-    return pd.to_numeric(series, errors="coerce").dropna()
+    return pd.to_numeric(flatten_col(df[col]), errors="coerce").dropna()
 
 
 def clean_close(df):
@@ -163,7 +153,6 @@ def clean_volume(df):
 def calc_vwap(df):
     close = clean_close(df)
     volume = clean_volume(df)
-
     joined = pd.concat([close.rename("Close"), volume.rename("Volume")], axis=1).dropna()
 
     if joined.empty or joined["Volume"].sum() == 0:
@@ -172,7 +161,7 @@ def calc_vwap(df):
     return float((joined["Close"] * joined["Volume"]).sum() / joined["Volume"].sum())
 
 
-def calc_trading_stats(df):
+def calc_stats(df):
     close = clean_close(df)
     high = clean_high(df)
     low = clean_low(df)
@@ -204,7 +193,7 @@ def calc_trading_stats(df):
     }
 
 
-def style_direction(value):
+def direction_icon(value):
     if value > 0:
         return "▲"
     if value < 0:
@@ -213,44 +202,66 @@ def style_direction(value):
 
 
 # -----------------------------
-# Chart Helpers
+# Chart helpers
 # -----------------------------
-def standard_chart_layout(fig, height, title=None):
+def visible_range(df):
+    close = clean_close(df)
+    if close.empty:
+        return None
+
+    end = close.index[-1]
+    start = end - pd.Timedelta(minutes=st.session_state.zoom_minutes)
+    return [start, end]
+
+
+def apply_chart_layout(fig, height, title=None, y_title=None, df_for_range=None):
+    xaxis = {
+        "title": "Eastern Time",
+        "tickformat": "%I:%M %p",
+        "hoverformat": "%I:%M:%S %p ET",
+        "rangeslider": {"visible": False},
+        "fixedrange": False,
+    }
+
+    # Auto-scroll is optional. When off, Plotly's uirevision preserves manual zoom/pan better.
+    if st.session_state.auto_scroll and df_for_range is not None:
+        rng = visible_range(df_for_range)
+        if rng:
+            xaxis["range"] = rng
+
     fig.update_layout(
         height=height,
         title=title,
         template="plotly_dark",
         hovermode="x unified",
         dragmode="pan",
-        xaxis=dict(
-            title="Eastern Time",
-            tickformat="%I:%M %p",
-            hoverformat="%I:%M:%S %p ET",
-            rangeslider=dict(visible=False),
-        ),
-        margin=dict(l=10, r=10, t=50 if title else 30, b=10),
+        uirevision="keep-zoom",
+        xaxis=xaxis,
+        transition_duration=0,
+        margin={"l": 10, "r": 10, "t": 50 if title else 30, "b": 10},
     )
+
+    if y_title:
+        fig.update_yaxes(title_text=y_title, fixedrange=False)
+
     return fig
 
 
-def add_reference_lines(fig, stats, show_vwap=True, show_open=True, show_high_low=True):
-    if stats is None:
+def add_reference_lines(fig, stats):
+    if not stats:
         return fig
 
-    if show_open:
-        fig.add_hline(y=stats["open"], line_dash="dot", annotation_text="Open", annotation_position="top left")
+    fig.add_hline(y=stats["open"], line_dash="dot", annotation_text="Open", annotation_position="top left")
+    fig.add_hline(y=stats["high"], line_dash="dot", annotation_text="High", annotation_position="top right")
+    fig.add_hline(y=stats["low"], line_dash="dot", annotation_text="Low", annotation_position="bottom right")
 
-    if show_vwap and stats["vwap"] is not None:
+    if stats["vwap"] is not None:
         fig.add_hline(y=stats["vwap"], line_dash="dash", annotation_text="VWAP approx", annotation_position="bottom left")
-
-    if show_high_low:
-        fig.add_hline(y=stats["high"], line_dash="dot", annotation_text="High", annotation_position="top right")
-        fig.add_hline(y=stats["low"], line_dash="dot", annotation_text="Low", annotation_position="bottom right")
 
     return fig
 
 
-def make_single_chart(df, ticker, stats, height=430, smooth=True, show_refs=True):
+def single_chart(df, ticker, stats, smooth=True, show_refs=True, height=390):
     close = clean_close(df)
     chart_df = pd.DataFrame({"Close": close})
 
@@ -258,7 +269,6 @@ def make_single_chart(df, ticker, stats, height=430, smooth=True, show_refs=True
         chart_df["Close"] = chart_df["Close"].rolling(3, min_periods=1).mean()
 
     fig = go.Figure()
-
     fig.add_trace(
         go.Scatter(
             x=chart_df.index,
@@ -272,14 +282,12 @@ def make_single_chart(df, ticker, stats, height=430, smooth=True, show_refs=True
     if show_refs:
         fig = add_reference_lines(fig, stats)
 
-    fig = standard_chart_layout(fig, height=height)
-    fig.update_yaxes(title_text="Price")
-    return fig
+    return apply_chart_layout(fig, height=height, y_title="Price", df_for_range=df)
 
 
-def make_joined_pattern_chart(spy_df, dia_df, height=520, smooth=True, show_spread=True):
-    spy_close = clean_close(spy_df)
-    dia_close = clean_close(dia_df)
+def joined_chart(spy, dia, smooth=True, show_spread=True, height=630):
+    spy_close = clean_close(spy)
+    dia_close = clean_close(dia)
 
     joined = pd.concat([spy_close.rename("SPY"), dia_close.rename("DIA")], axis=1).dropna()
 
@@ -302,40 +310,39 @@ def make_joined_pattern_chart(spy_df, dia_df, height=520, smooth=True, show_spre
     fig.add_trace(go.Scatter(x=normalized.index, y=normalized["DIA Pattern"], mode="lines", name="DIA Pattern", line_shape="spline" if smooth else "linear"))
 
     if show_spread:
-        fig.add_trace(go.Scatter(x=normalized.index, y=normalized["Spread"], mode="lines", name="SPY-DIA Spread", line=dict(dash="dot")))
+        fig.add_trace(go.Scatter(x=normalized.index, y=normalized["Spread"], mode="lines", name="SPY-DIA Spread", line={"dash": "dot"}))
 
     fig.add_hline(y=0, line_dash="dash")
 
-    fig = standard_chart_layout(fig, height=height, title="Joined Pattern Chart: SPY vs DIA")
-    fig.update_yaxes(title_text="Move From Start (%)")
+    fig = apply_chart_layout(
+        fig,
+        height=height,
+        title="Joined Pattern Chart: SPY vs DIA",
+        y_title="Move From Start (%)",
+        df_for_range=spy,
+    )
+
     return fig, normalized
 
 
-def make_volume_chart(spy, dia):
+def volume_chart(spy, dia):
     spy_volume = clean_volume(spy)
     dia_volume = clean_volume(dia)
 
-    volume_fig = go.Figure()
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=spy_volume.index, y=spy_volume, name="SPY Volume", opacity=0.65))
+    fig.add_trace(go.Bar(x=dia_volume.index, y=dia_volume, name="DIA Volume", opacity=0.65))
+    fig.update_layout(barmode="overlay")
 
-    volume_fig.add_trace(go.Bar(x=spy_volume.index, y=spy_volume, name="SPY Volume", opacity=0.65))
-    volume_fig.add_trace(go.Bar(x=dia_volume.index, y=dia_volume, name="DIA Volume", opacity=0.65))
-
-    volume_fig = standard_chart_layout(volume_fig, height=330)
-    volume_fig.update_layout(barmode="overlay")
-    volume_fig.update_yaxes(title_text="Volume")
-    return volume_fig
+    return apply_chart_layout(fig, height=320, y_title="Volume", df_for_range=spy)
 
 
-def show_chart(fig):
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        config=PLOTLY_CONFIG,
-    )
+def show_chart(fig, key):
+    st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG, key=key)
 
 
 # -----------------------------
-# Button Styling
+# Styling
 # -----------------------------
 run_color = "#00cc66" if st.session_state.running else "#444444"
 stop_color = "#ff3333" if not st.session_state.running else "#444444"
@@ -360,6 +367,13 @@ st.markdown(
         color: white;
         border: 1px solid {stop_color};
     }}
+
+    [data-testid="stMetric"] {{
+        background-color: rgba(255,255,255,0.035);
+        border: 1px solid rgba(255,255,255,0.08);
+        padding: 10px;
+        border-radius: 10px;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -367,18 +381,23 @@ st.markdown(
 
 
 # -----------------------------
-# Header / Controls
+# UI
 # -----------------------------
 st.title("SPY vs DIA Day Trading Dashboard")
-st.caption("Optimized for quick intraday pattern reading with scroll-wheel zoom on every chart.")
+st.caption("Stable live updates, preserved zoom, mouse-wheel zoom, and Eastern Time charts.")
 
 st.sidebar.header("Dashboard Mode")
-mode = st.sidebar.radio(
+st.session_state.mode = st.sidebar.radio(
     "Choose view",
     ["1-Second Trading View", "Pattern Dashboard"],
     index=0 if st.session_state.mode == "1-Second Trading View" else 1,
 )
-st.session_state.mode = mode
+
+st.sidebar.header("Live Update Settings")
+refresh_seconds = st.sidebar.slider("Refresh every", 3, 30, 5)
+st.session_state.lock_zoom = st.sidebar.checkbox("Keep zoom while live updates", value=st.session_state.lock_zoom)
+st.session_state.auto_scroll = st.sidebar.checkbox("Auto-follow latest bars", value=st.session_state.auto_scroll)
+st.session_state.zoom_minutes = st.sidebar.slider("Default visible window, minutes", 15, 240, st.session_state.zoom_minutes)
 
 st.sidebar.header("Display Settings")
 smooth_lines = st.sidebar.checkbox("Smooth lines", value=True)
@@ -387,8 +406,7 @@ show_reference_lines = st.sidebar.checkbox("Show open / high / low / VWAP lines"
 show_spread_line = st.sidebar.checkbox("Show SPY-DIA spread line", value=True)
 
 st.subheader("Controls")
-
-col_run, col_stop, col_day, col_5day, col_month = st.columns(5)
+col_run, col_stop, col_refresh, col_day, col_5day, col_month = st.columns(6)
 
 with col_run:
     if st.button("▶ RUN LIVE", use_container_width=True):
@@ -398,6 +416,11 @@ with col_run:
 with col_stop:
     if st.button("■ STOP", use_container_width=True):
         st.session_state.running = False
+        st.rerun()
+
+with col_refresh:
+    if st.button("↻ REFRESH", use_container_width=True):
+        st.session_state.refresh_key += 1
         st.rerun()
 
 with col_day:
@@ -415,17 +438,12 @@ with col_month:
         st.session_state.view_period = "1mo"
         st.session_state.interval = "15m"
 
-if st.session_state.mode == "1-Second Trading View":
-    refresh_seconds = st.sidebar.slider("Screen refresh speed", 1, 5, 1)
-else:
-    refresh_seconds = st.sidebar.slider("Screen refresh speed", 1, 10, 1)
-
 if st.session_state.running:
-    st_autorefresh(interval=refresh_seconds * 1000, key="refresh")
+    st_autorefresh(interval=refresh_seconds * 1000, key="stable_refresh")
 
 
 # -----------------------------
-# Data Mode
+# Main data flow
 # -----------------------------
 if st.session_state.mode == "1-Second Trading View":
     period = "1d"
@@ -434,15 +452,15 @@ else:
     period = st.session_state.view_period
     interval = st.session_state.interval
 
-spy, dia = load_data(period, interval)
+spy, dia = load_data(period, interval, st.session_state.refresh_key)
 
 if spy is None or dia is None:
     st.warning("Market data unavailable right now. Try again in a minute or switch the time view.")
     st.caption(f"Last checked: {eastern_time_string()}")
     st.stop()
 
-spy_stats = calc_trading_stats(spy)
-dia_stats = calc_trading_stats(dia)
+spy_stats = calc_stats(spy)
+dia_stats = calc_stats(dia)
 
 if spy_stats is None or dia_stats is None:
     st.warning("Not enough market data yet.")
@@ -454,67 +472,63 @@ status = "LIVE RUNNING" if st.session_state.running else "PAUSED"
 
 st.info(
     f"Status: {status} | {mkt_status} ({mkt_detail}) | Mode: {st.session_state.mode} | "
-    f"Source interval: {interval} | Screen refresh: {refresh_seconds}s | Time: {eastern_time_string()}"
+    f"Source interval: {interval} | Refresh: {refresh_seconds}s | Time: {eastern_time_string()}"
 )
 
-st.caption("Chart controls: hover over any chart and use your mouse wheel to zoom in/out. Click and drag to pan. Double-click to reset the view.")
+st.caption(
+    "Use your mouse wheel over a chart to zoom. Drag to pan. Double-click to reset. "
+    "For the least twitching, leave Auto-follow off while zoomed in."
+)
 
 
 # -----------------------------
-# Fast Trading Readout
+# Metrics
 # -----------------------------
 spy_vwap_state = "Above VWAP" if spy_stats["above_vwap"] else "Below VWAP" if spy_stats["above_vwap"] is not None else "VWAP N/A"
 dia_vwap_state = "Above VWAP" if dia_stats["above_vwap"] else "Below VWAP" if dia_stats["above_vwap"] is not None else "VWAP N/A"
 
 m1, m2, m3, m4, m5, m6 = st.columns(6)
-
-m1.metric("SPY Last", f"${spy_stats['latest']:.2f}", f"{style_direction(spy_stats['bar_change'])} {spy_stats['bar_change']:.2f}")
+m1.metric("SPY Last", f"${spy_stats['latest']:.2f}", f"{direction_icon(spy_stats['bar_change'])} {spy_stats['bar_change']:.2f}")
 m2.metric("SPY From Open", f"{spy_stats['from_open_pct']:.2f}%", f"${spy_stats['from_open']:.2f}")
 m3.metric("SPY VWAP", spy_vwap_state)
-
-m4.metric("DIA Last", f"${dia_stats['latest']:.2f}", f"{style_direction(dia_stats['bar_change'])} {dia_stats['bar_change']:.2f}")
+m4.metric("DIA Last", f"${dia_stats['latest']:.2f}", f"{direction_icon(dia_stats['bar_change'])} {dia_stats['bar_change']:.2f}")
 m5.metric("DIA From Open", f"{dia_stats['from_open_pct']:.2f}%", f"${dia_stats['from_open']:.2f}")
 m6.metric("DIA VWAP", dia_vwap_state)
 
-bias_parts = []
-
+bias = []
 if spy_stats["from_open_pct"] > 0 and dia_stats["from_open_pct"] > 0:
-    bias_parts.append("Both green from open")
+    bias.append("Both green from open")
 elif spy_stats["from_open_pct"] < 0 and dia_stats["from_open_pct"] < 0:
-    bias_parts.append("Both red from open")
+    bias.append("Both red from open")
 else:
-    bias_parts.append("Mixed index tone")
+    bias.append("Mixed index tone")
 
 if spy_stats["above_vwap"] and dia_stats["above_vwap"]:
-    bias_parts.append("both above VWAP")
+    bias.append("both above VWAP")
 elif spy_stats["above_vwap"] is False and dia_stats["above_vwap"] is False:
-    bias_parts.append("both below VWAP")
+    bias.append("both below VWAP")
 else:
-    bias_parts.append("VWAP divergence")
+    bias.append("VWAP divergence")
 
-st.markdown(f"**Quick read:** {'; '.join(bias_parts)}.")
+st.markdown(f"**Quick read:** {'; '.join(bias)}.")
 
 
 # -----------------------------
-# Main Views
+# Charts
 # -----------------------------
 if st.session_state.mode == "1-Second Trading View":
     st.subheader("1-Second Trading View")
-    st.caption(
-        "Screen refreshes every second when RUN LIVE is on. Yahoo/yfinance normally supplies 1-minute bars, "
-        "so the chart refreshes every second but is not true tick-by-tick data."
-    )
 
-    joined_fig, normalized = make_joined_pattern_chart(
+    joined_fig, normalized = joined_chart(
         spy,
         dia,
-        height=640,
         smooth=smooth_lines,
         show_spread=show_spread_line,
+        height=640,
     )
 
-    if joined_fig is not None:
-        show_chart(joined_fig)
+    if joined_fig:
+        show_chart(joined_fig, "joined_live_chart")
 
         latest_spy_pattern = float(normalized["SPY Pattern"].iloc[-1])
         latest_dia_pattern = float(normalized["DIA Pattern"].iloc[-1])
@@ -526,77 +540,33 @@ if st.session_state.mode == "1-Second Trading View":
         c3.metric("SPY vs DIA Spread", f"{spread:.2f}%")
         c4.metric("Leader", "SPY" if spread > 0 else "DIA" if spread < 0 else "Even")
 
-    col1, col2 = st.columns(2)
-
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         st.subheader("SPY Price Action")
-        show_chart(
-            make_single_chart(
-                spy,
-                "SPY",
-                spy_stats,
-                height=380,
-                smooth=smooth_lines,
-                show_refs=show_reference_lines,
-            )
-        )
+        show_chart(single_chart(spy, "SPY", spy_stats, smooth_lines, show_reference_lines), "spy_live_chart")
 
-    with col2:
+    with c2:
         st.subheader("DIA Price Action")
-        show_chart(
-            make_single_chart(
-                dia,
-                "DIA",
-                dia_stats,
-                height=380,
-                smooth=smooth_lines,
-                show_refs=show_reference_lines,
-            )
-        )
+        show_chart(single_chart(dia, "DIA", dia_stats, smooth_lines, show_reference_lines), "dia_live_chart")
 
 else:
     st.subheader("Pattern Dashboard")
 
-    col1, col2 = st.columns(2)
-
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         st.subheader("SPY Chart")
-        show_chart(
-            make_single_chart(
-                spy,
-                "SPY",
-                spy_stats,
-                smooth=smooth_lines,
-                show_refs=show_reference_lines,
-            )
-        )
+        show_chart(single_chart(spy, "SPY", spy_stats, smooth_lines, show_reference_lines), "spy_pattern_chart")
 
-    with col2:
+    with c2:
         st.subheader("DIA Chart")
-        show_chart(
-            make_single_chart(
-                dia,
-                "DIA",
-                dia_stats,
-                smooth=smooth_lines,
-                show_refs=show_reference_lines,
-            )
-        )
+        show_chart(single_chart(dia, "DIA", dia_stats, smooth_lines, show_reference_lines), "dia_pattern_chart")
 
     st.divider()
     st.subheader("Joined Pattern Reader")
+    joined_fig, normalized = joined_chart(spy, dia, smooth_lines, show_spread_line)
 
-    joined_fig, normalized = make_joined_pattern_chart(
-        spy,
-        dia,
-        smooth=smooth_lines,
-        show_spread=show_spread_line,
-    )
-
-    if joined_fig is None:
-        st.warning("Could not build joined pattern chart yet.")
-    else:
-        show_chart(joined_fig)
+    if joined_fig:
+        show_chart(joined_fig, "joined_pattern_chart")
 
         latest_spy_pattern = float(normalized["SPY Pattern"].iloc[-1])
         latest_dia_pattern = float(normalized["DIA Pattern"].iloc[-1])
@@ -608,16 +578,13 @@ else:
         c3.metric("SPY vs DIA Spread", f"{spread:.2f}%")
         c4.metric("Leader", "SPY" if spread > 0 else "DIA" if spread < 0 else "Even")
 
-
-# -----------------------------
-# Volume + Snapshot
-# -----------------------------
 if show_volume:
     st.divider()
     st.subheader("Volume")
-    show_chart(make_volume_chart(spy, dia))
+    show_chart(volume_chart(spy, dia), "volume_chart")
 
 st.divider()
+st.subheader("Market Snapshot")
 
 snapshot = pd.DataFrame(
     {
@@ -634,11 +601,11 @@ snapshot = pd.DataFrame(
     }
 )
 
-st.subheader("Market Snapshot")
 st.dataframe(snapshot, use_container_width=True)
 
 st.caption(f"Last updated: {eastern_time_string()}")
 st.caption(
     "No API key required. Data source: yfinance / Yahoo Finance. "
-    "For true 1-second tick data, use a paid real-time feed such as Polygon, Alpaca, Tradier, or Interactive Brokers."
+    "Yahoo generally provides 1-minute bars, not true tick data. "
+    "This version prioritizes stable chart interaction over aggressive refresh."
 )
