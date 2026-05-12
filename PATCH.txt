@@ -1,0 +1,36 @@
+
+# ADD THIS IMPORT
+from zoneinfo import ZoneInfo
+
+# ADD THIS HELPER FUNCTION
+def convert_to_est_index(df):
+    try:
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+
+        df.index = df.index.tz_convert("America/New_York")
+        return df
+
+    except Exception:
+        return df
+
+# AFTER DOWNLOADING DATA, ADD:
+spy = convert_to_est_index(spy)
+dia = convert_to_est_index(dia)
+
+# ALSO ADD THIS TO EVERY FIGURE update_layout()
+
+xaxis=dict(
+    tickformat="%I:%M %p",
+    hoverformat="%I:%M:%S %p ET"
+)
+
+# Example:
+
+fig.update_layout(
+    template="plotly_dark",
+    xaxis=dict(
+        tickformat="%I:%M %p",
+        hoverformat="%I:%M:%S %p ET"
+    )
+)
